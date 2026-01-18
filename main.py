@@ -1,179 +1,116 @@
 import os
 import json
-import re
+import uuid
+import pandas as pd
+import asyncio
+from flask import Flask, request, jsonify, send_file
+from telegram import Bot, Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 import threading
 
-from flask import Flask, request, jsonify, Response
+# --- AYARLAR ---
+TELEGRAM_BOT_TOKEN = "7127783002:AAHsB7KxujS-YnLJzxntfThAVR2d9fv0TpE"
+MASTER_KEY = "lord2026"
+RENDER_URL = "https://ganstar.onrender.com"
+DB_FILE = "api_database.json"
 
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-
-# ======================
-# AYARLAR – ENVIRONMENT YOK
-# ======================
-DATA_DIR = "data"
-PORT = int(os.environ.get("PORT", 10000))  # Render otomatik verir – DOKUNMA!
-
-BOT_TOKEN = "7127783002:AAHYAQfkVgEXOzMSz5L99wqa_NsmOm8Q5rU"  # ←←← KENDİ BOT TOKEN'INI BURAYA KOY
-
-ADMIN_ID = 8258235296
-CHANNEL = "@lordsystemv3"
-
-os.makedirs(DATA_DIR, exist_ok=True)
-
-# ======================
-# FLASK – Render health check + port için ZORUNLU
-# ======================
 app = Flask(__name__)
 
-@app.route("/")
-def home():
-    return "Bot aktif – LORD FREE", 200
+# Veritabanı kontrolü
+if not os.path.exists(DB_FILE):
+    with open(DB_FILE, 'w') as f: json.dump({}, f)
 
-@app.route("/health")
-def health():
-    return "OK", 200
+def db_oku():
+    with open(DB_FILE, 'r') as f: return json.load(f)
 
-# ======================
-# API SEARCH (eski mantık korunmuş)
-# ======================
-def normalize(v):
-    if not v:
-        return ""
-    return re.sub(r"\s+", "", str(v)).upper()
+def db_yaz(data):
+    with open(DB_FILE, 'w') as f: json.dump(data, f, indent=4)
 
-@app.route("/api/search/<name>")
-def search(name):
-    path = os.path.join(DATA_DIR, f"{name}.json")
-    if not os.path.isfile(path):
-        return {"error": "Dosya yok"}, 404
+# --- TELEGRAM BOT MANTIĞI ---
 
-    if not request.args:
-        return {"error": "Parametre yok"}, 400
-
-    key, value = next(iter(request.args.items()))
-
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    value = normalize(value)
-    results = [
-        r for r in data
-        if key in r and normalize(r.get(key, "")) == value
-    ]
-
-    if not results:
-        return {"error": "Bulunamadı"}, 404
-
-    if len(results) == 1:
-        return jsonify(results[0])
-
-    txt = ""
-    for i, r in enumerate(results, 1):
-        txt += f"--- KAYIT {i} ---\n"
-        for k, v in r.items():
-            txt += f"{k}: {v}\n"
-        txt += "\n"
-    return Response(txt, mimetype="text/plain")
-
-# ======================
-# BOT HANDLER'LAR
-# ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    await update.message.reply_text(f"Merhaba! Ben API Botu. Dosya gönder, sana özel API oluşturayım. \n\nMaster Key: {MASTER_KEY}")
 
-    if uid == ADMIN_ID:
-        kb = [["📤 Dosya Yükle"], ["📄 Dosyalar"]]
-        await update.message.reply_text(
-            "👑 ADMIN PANEL",
-            reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True)
-        )
-        return
-
-    try:
-        member = await context.bot.get_chat_member(CHANNEL, uid)
-        if member.status in ("member", "administrator", "creator"):
-            await update.message.reply_text("✅ Hoş geldin!")
-        else:
-            await update.message.reply_text(f"❌ {CHANNEL} kanalına katıl!")
-    except Exception:
-        await update.message.reply_text(f"❌ {CHANNEL} kanalına katıl!")
-
-async def handle_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
+async def dosya_al(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    if not doc:
-        await update.message.reply_text("Dosya gönder lütfen.")
-        return
-
-    file = await doc.get_file()
-    raw_bytes = await file.download_as_bytearray()
-    text = raw_bytes.decode("utf-8", errors="ignore")
-
+    file = await context.bot.get_file(doc.file_id)
+    file_name = doc.file_name
+    
+    # Dosyayı indir
+    temp_path = f"temp_{file_name}"
+    await file.download_to_drive(temp_path)
+    
+    # Token oluştur ve işle
+    api_token = str(uuid.uuid4())[:8]
+    json_path = f"data_{api_token}.json"
+    
     try:
-        data = json.loads(text)
-        if not isinstance(data, list):
-            raise ValueError
-    except Exception:
-        data = [{"value": l.strip()} for l in text.splitlines() if l.strip()]
+        if file_name.endswith('.csv'):
+            df = pd.read_csv(temp_path)
+        else:
+            df = pd.read_csv(temp_path, sep=None, engine='python')
+        
+        veriler = df.to_dict(orient='records')
+        with open(json_path, 'w', encoding='utf-8') as f:
+            json.dump(veriler, f, indent=4, ensure_ascii=False)
+        
+        db = db_oku()
+        db[api_token] = json_path
+        db_yaz(db)
+        
+        msg = (f"✅ API Oluşturuldu!\n\n"
+               f"🔑 Token: `{api_token}`\n"
+               f"🔗 API Link: {RENDER_URL}/get-data\n"
+               f"❓ Sorgu: `{RENDER_URL}/get-data?token={api_token}&ara=kelime`\n\n"
+               f"Veriyi çekmek için bu tokeni kullanın.")
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        
+    except Exception as e:
+        await update.message.reply_text(f"Hata oluştu: {e}")
+    finally:
+        if os.path.exists(temp_path): os.remove(temp_path)
 
-    name = os.path.splitext(doc.file_name or "veri")[0].lower()
-    safe = "".join(c for c in name if c.isalnum() or c in "-_")
+# --- FLASK API MANTIĞI (Veri Çekme) ---
 
-    path = os.path.join(DATA_DIR, f"{safe}.json")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+@app.route('/get-data', methods=['GET'])
+def veri_cek():
+    token = request.args.get('token') or request.headers.get("Authorization")
+    sorgu = request.args.get('ara')
 
-    await update.message.reply_text(f"✅ Yüklendi: /{safe}\nÖrnek: /api/search/{safe}?key=deger")
+    db = db_oku()
+    if token not in db:
+        return jsonify({"hata": "Gecersiz Token"}), 401
 
-# ======================
-# BOT BAŞLATMA
-# ======================
-def run_bot():
-    if not BOT_TOKEN or len(BOT_TOKEN.strip()) < 30:
-        print("HATA: BOT_TOKEN kodda tanımlı değil veya hatalı!")
-        return
+    with open(db[token], 'r', encoding='utf-8') as f:
+        veriler = json.load(f)
 
-    print("Bot polling başlıyor...")
+    if sorgu:
+        sonuclar = [v for v in veriler if sorgu.lower() in str(v.values()).lower()]
+    else:
+        sonuclar = veriler
 
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    if len(sonuclar) > 30:
+        t_file = f"result_{token}.txt"
+        with open(t_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(sonuclar, indent=4, ensure_ascii=False))
+        return send_file(t_file, as_attachment=True)
 
+    return jsonify(sonuclar)
+
+# --- ÇALIŞTIRMA ---
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+if __name__ == '__main__':
+    # Flask'ı ayrı bir işlemde başlat
+    threading.Thread(target=run_flask).start()
+    
+    # Telegram Botu başlat
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_file))
-
-    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-        print(f"Bot hatası: {context.error}")
-
-    application.add_error_handler(error_handler)
-
-    application.run_polling(
-        poll_interval=1.0,
-        timeout=20,
-        drop_pending_updates=True,          # restart sonrası eski update'leri at
-        bootstrap_retries=-1,               # bağlantı sorunu olursa sonsuz retry
-        allowed_updates=Update.ALL_TYPES
-    )
-
-# ======================
-# ANA ÇALIŞTIRMA
-# ======================
-if __name__ == "__main__":
-    # Bot ayrı thread'de
-    threading.Thread(target=run_bot, daemon=True).start()
-
-    # Flask ana thread'de (Render dinlesin)
-    print(f"Flask başlatılıyor – PORT: {PORT}")
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-        debug=False,
-        use_reloader=False
-    )
+    application.add_handler(MessageHandler(filters.Document.ALL, dosya_al))
+    
+    print("Bot ve API başlatıldı...")
+    application.run_polling()
