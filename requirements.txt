@@ -2,4 +2,5 @@ flask
 pandas
 python-telegram-bot
 requests
+openpyxl
 gunicorn
