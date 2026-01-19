@@ -18,8 +18,7 @@ from telegram.ext import (
     filters
 )
 
-# ================= AYARLAR =================
-BOT_TOKEN = "8210876778:AAEYapHGjNEx1ysqLR4nYr2ilXZ4m7tOsOs"
+# ===================== AYARLAR =====================
 BASE_URL = "https://ganstar.onrender.com"
 
 DATA_DIR = "veriler"
@@ -29,7 +28,12 @@ LOG_FILE = "logs.json"
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# ================= FLASK =================
+# 🔴 TOKEN SADECE ENV'DEN OKUNUR
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable yok!")
+
+# ===================== FLASK =====================
 app = Flask(__name__)
 
 def load_logs():
@@ -38,10 +42,10 @@ def load_logs():
     with open(LOG_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
 
-def save_log(data):
+def save_log(entry):
     logs = load_logs()
-    logs.append(data)
-    logs = logs[-100:]
+    logs.append(entry)
+    logs = logs[-100:]  # son 100 istek
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(logs, f, ensure_ascii=False, indent=2)
 
@@ -64,7 +68,10 @@ def search_api(api_id):
     })
 
     if query:
-        data = [x for x in data if query in json.dumps(x, ensure_ascii=False).lower()]
+        data = [
+            item for item in data
+            if query in json.dumps(item, ensure_ascii=False).lower()
+        ]
 
     return jsonify(data)
 
@@ -79,39 +86,39 @@ def run_flask():
         threaded=True
     )
 
-# ================= DOSYA İŞLEME =================
-def extract_archive(path, out):
+# ===================== DOSYA İŞLEME =====================
+def extract_archive(path, out_dir):
     if path.endswith(".zip"):
         with zipfile.ZipFile(path) as z:
-            z.extractall(out)
+            z.extractall(out_dir)
 
     elif path.endswith(".7z"):
         with py7zr.SevenZipFile(path, mode="r") as z:
-            z.extractall(out)
+            z.extractall(out_dir)
 
 def read_all_files(folder):
     results = []
     for root, _, files in os.walk(folder):
         for name in files:
-            full = os.path.join(root, name)
+            full_path = os.path.join(root, name)
             try:
-                with open(full, encoding="utf-8", errors="ignore") as f:
+                with open(full_path, encoding="utf-8", errors="ignore") as f:
                     for line in f:
                         line = line.strip()
                         if line:
                             results.append({
                                 "veri": line,
-                                " ": ""
+                                " ": ""   # her kaydın altında boşluk
                             })
             except:
                 pass
     return results
 
-# ================= TELEGRAM =================
+# ===================== TELEGRAM =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "📦 ZIP veya 7Z dosya gönder.\n"
-        "İçindeki tüm veriler API olarak açılır."
+        "İçindeki tüm veriler JSON API olarak açılır."
     )
 
 async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,12 +148,14 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{BASE_URL}/api/v1/search/{api_id}?ara="
     )
 
-# ================= MAIN =================
+# ===================== MAIN =====================
 if __name__ == "__main__":
+    # Flask ayrı thread
     threading.Thread(target=run_flask).start()
 
-    bot = Application.builder().token(BOT_TOKEN).build()
-    bot.add_handler(CommandHandler("start", start))
-    bot.add_handler(MessageHandler(filters.Document.ALL, file_handler))
+    # Telegram Bot
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.Document.ALL, file_handler))
 
-    bot.run_polling()
+    application.run_polling()
