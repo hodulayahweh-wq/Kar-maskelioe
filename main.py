@@ -4,8 +4,10 @@ import os
 import json
 import zipfile
 import datetime
+import threading
 import py7zr
-from flask import Flask, request, jsonify
+
+from flask import Flask, jsonify
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -15,40 +17,38 @@ from telegram.ext import (
     filters
 )
 
-# ================== ENV ==================
+# ================== AYARLAR ==================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-BASE_URL = os.environ.get("RENDER_EXTERNAL_URL")
-PORT = int(os.environ.get("PORT", 10000))
-
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN yok")
-if not BASE_URL:
-    raise RuntimeError("RENDER_EXTERNAL_URL yok")
+
+PORT = int(os.environ.get("PORT", 10000))
 
 DATA_DIR = "veriler"
 TEMP_DIR = "temp"
+
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# ================== TELEGRAM APP ==================
-tg_app = Application.builder().token(BOT_TOKEN).build()
+# ================== TELEGRAM BOT ==================
+application = Application.builder().token(BOT_TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "📦 ZIP / 7Z / TXT gönder\n"
-        "Dosya otomatik API olur"
+        "📦 ZIP / 7Z / TXT gönder.\n"
+        "İçerik JSON API’ye çevrilir."
     )
 
 async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
-    await update.message.reply_text("⏳ İşleniyor...")
+    await update.message.reply_text("⏳ Dosya işleniyor...")
 
     tg_file = await context.bot.get_file(doc.file_id)
-    temp_path = os.path.join(TEMP_DIR, doc.file_name)
-    await tg_file.download_to_drive(temp_path)
+    file_path = os.path.join(TEMP_DIR, doc.file_name)
+    await tg_file.download_to_drive(file_path)
 
     api_id = f"api_{int(datetime.datetime.now().timestamp())}"
-    sonuc = []
+    result = []
 
     def oku(dosya):
         try:
@@ -56,60 +56,55 @@ async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for line in f:
                     line = line.strip()
                     if line:
-                        sonuc.append({
+                        result.append({
                             "veri": line,
                             "": ""
                         })
         except:
             pass
 
-    if temp_path.endswith(".zip"):
-        with zipfile.ZipFile(temp_path) as z:
+    if file_path.endswith(".zip"):
+        with zipfile.ZipFile(file_path) as z:
             z.extractall(TEMP_DIR)
             for name in z.namelist():
                 oku(os.path.join(TEMP_DIR, name))
 
-    elif temp_path.endswith(".7z"):
-        with py7zr.SevenZipFile(temp_path) as z:
+    elif file_path.endswith(".7z"):
+        with py7zr.SevenZipFile(file_path, mode="r") as z:
             z.extractall(TEMP_DIR)
             for root, _, files in os.walk(TEMP_DIR):
                 for f in files:
                     oku(os.path.join(root, f))
     else:
-        oku(temp_path)
+        oku(file_path)
 
-    with open(f"{DATA_DIR}/{api_id}.json", "w", encoding="utf-8") as f:
-        json.dump(sonuc, f, ensure_ascii=False, indent=2)
+    out_path = os.path.join(DATA_DIR, f"{api_id}.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
 
     await update.message.reply_text(
-        f"✅ API hazır\n\n{BASE_URL}/api/{api_id}"
+        f"✅ API OLUŞTURULDU\n\n"
+        f"/api/{api_id}"
     )
 
-tg_app.add_handler(CommandHandler("start", start))
-tg_app.add_handler(MessageHandler(filters.Document.ALL, file_handler))
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.Document.ALL, file_handler))
 
-# ================== FLASK ==================
+# ================== FLASK API ==================
 app = Flask(__name__)
-
-@app.route("/", methods=["GET"])
-def home():
-    return "Bot aktif"
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), tg_app.bot)
-    tg_app.update_queue.put_nowait(update)
-    return "OK"
 
 @app.route("/api/<api_id>")
 def api(api_id):
-    path = f"{DATA_DIR}/{api_id}.json"
+    path = os.path.join(DATA_DIR, f"{api_id}.json")
     if not os.path.exists(path):
-        return jsonify({"error": "yok"})
+        return jsonify({"error": "bulunamadı"})
     with open(path, encoding="utf-8") as f:
         return jsonify(json.load(f))
 
+def run_flask():
+    app.run(host="0.0.0.0", port=PORT)
+
 # ================== MAIN ==================
 if __name__ == "__main__":
-    tg_app.bot.set_webhook(f"{BASE_URL}/webhook")
-    app.run(host="0.0.0.0", port=PORT)
+    threading.Thread(target=run_flask).start()
+    application.run_polling()
