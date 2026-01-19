@@ -1,6 +1,5 @@
+python-telegram-bot==20.7
 flask
 pandas
-python-telegram-bot
-requests
-openpyxl
-gunicorn
+py7zr
+rarfile
