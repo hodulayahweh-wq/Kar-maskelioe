@@ -1,50 +1,70 @@
-import os, json, zipfile, shutil, threading, datetime
-import py7zr, rarfile
+# -*- coding: utf-8 -*-
+
+import os
+import json
+import zipfile
+import shutil
+import threading
+import datetime
+
+import py7zr
 from flask import Flask, request, jsonify
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    ContextTypes,
+    filters
+)
 
-# ================== AYARLAR ==================
-TOKEN = "7127783002:AAHKKKCRHPj-O6aNEX-8s3PBLMI3EgS9ri8"
+# ================= AYARLAR =================
+BOT_TOKEN = "7127783002:AAHKKKCRHPj-O6aNEX-8s3PBLMI3EgS9ri8"
 BASE_URL = "https://ganstar.onrender.com"
+
 DATA_DIR = "veriler"
-TMP_DIR = "temp"
+TEMP_DIR = "temp"
 LOG_FILE = "logs.json"
 
 os.makedirs(DATA_DIR, exist_ok=True)
-os.makedirs(TMP_DIR, exist_ok=True)
+os.makedirs(TEMP_DIR, exist_ok=True)
 
-# ================== FLASK ==================
+# ================= FLASK =================
 app = Flask(__name__)
 
 def load_logs():
     if not os.path.exists(LOG_FILE):
         return []
-    return json.load(open(LOG_FILE))
+    with open(LOG_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-def save_log(entry):
+def save_log(data):
     logs = load_logs()
-    logs.append(entry)
-    json.dump(logs[-100:], open(LOG_FILE, "w"), indent=2)
+    logs.append(data)
+    logs = logs[-100:]
+    with open(LOG_FILE, "w", encoding="utf-8") as f:
+        json.dump(logs, f, ensure_ascii=False, indent=2)
 
-@app.route("/api/v1/search/<api>", methods=["GET"])
-def api_search(api):
-    path = f"{DATA_DIR}/{api}.json"
+@app.route("/api/v1/search/<api_id>")
+def search_api(api_id):
+    path = os.path.join(DATA_DIR, f"{api_id}.json")
     if not os.path.exists(path):
         return jsonify({"error": "API bulunamadı"}), 404
 
     query = request.args.get("ara", "").lower()
-    data = json.load(open(path, encoding="utf-8"))
+
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
 
     save_log({
-        "api": api,
+        "api": api_id,
         "query": query,
         "ip": request.remote_addr,
-        "time": datetime.datetime.now().strftime("%H:%M:%S")
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     })
 
     if query:
-        data = [i for i in data if query in json.dumps(i, ensure_ascii=False).lower()]
+        data = [x for x in data if query in json.dumps(x, ensure_ascii=False).lower()]
 
     return jsonify(data)
 
@@ -53,75 +73,80 @@ def api_logs():
     return jsonify(load_logs())
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), threaded=True)
+    app.run(
+        host="0.0.0.0",
+        port=int(os.environ.get("PORT", 10000)),
+        threaded=True
+    )
 
-# ================== DOSYA OKUMA ==================
+# ================= DOSYA İŞLEME =================
+def extract_archive(path, out):
+    if path.endswith(".zip"):
+        with zipfile.ZipFile(path) as z:
+            z.extractall(out)
+
+    elif path.endswith(".7z"):
+        with py7zr.SevenZipFile(path, mode="r") as z:
+            z.extractall(out)
+
 def read_all_files(folder):
-    output = []
+    results = []
     for root, _, files in os.walk(folder):
-        for f in files:
-            p = os.path.join(root, f)
+        for name in files:
+            full = os.path.join(root, name)
             try:
-                with open(p, encoding="utf-8", errors="ignore") as file:
-                    for line in file:
+                with open(full, encoding="utf-8", errors="ignore") as f:
+                    for line in f:
                         line = line.strip()
                         if line:
-                            output.append({
+                            results.append({
                                 "veri": line,
-                                " ": ""   # boşluklu kayıt
+                                " ": ""
                             })
             except:
                 pass
-    return output
+    return results
 
-def extract_archive(path, out):
-    if path.endswith(".zip"):
-        zipfile.ZipFile(path).extractall(out)
-    elif path.endswith(".7z"):
-        with py7zr.SevenZipFile(path).extractall(out)
-    elif path.endswith(".rar"):
-        rarfile.RarFile(path).extractall(out)
-
-# ================== TELEGRAM ==================
+# ================= TELEGRAM =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("📦 ZIP / 7Z dosya gönder.\nAPI otomatik oluşur.")
+    await update.message.reply_text(
+        "📦 ZIP veya 7Z dosya gönder.\n"
+        "İçindeki tüm veriler API olarak açılır."
+    )
 
-async def dosya(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def file_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     api_id = f"api_{int(datetime.datetime.now().timestamp())}"
 
-    await update.message.reply_text("⏳ Dosya açılıyor...")
+    await update.message.reply_text("⏳ Dosya işleniyor...")
 
-    f = await context.bot.get_file(doc.file_id)
-    archive = f"{TMP_DIR}/{doc.file_name}"
-    await f.download_to_drive(archive)
+    tg_file = await context.bot.get_file(doc.file_id)
+    archive_path = os.path.join(TEMP_DIR, doc.file_name)
+    await tg_file.download_to_drive(archive_path)
 
-    extract_dir = f"{TMP_DIR}/{api_id}"
-    os.makedirs(extract_dir, exist_ok=True)
+    extract_path = os.path.join(TEMP_DIR, api_id)
+    os.makedirs(extract_path, exist_ok=True)
 
-    extract_archive(archive, extract_dir)
-    data = read_all_files(extract_dir)
+    extract_archive(archive_path, extract_path)
+    data = read_all_files(extract_path)
 
-    json.dump(
-        data,
-        open(f"{DATA_DIR}/{api_id}.json", "w", encoding="utf-8"),
-        indent=2,
-        ensure_ascii=False
-    )
+    with open(os.path.join(DATA_DIR, f"{api_id}.json"), "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-    shutil.rmtree(extract_dir)
-    os.remove(archive)
+    shutil.rmtree(extract_path)
+    os.remove(archive_path)
 
     await update.message.reply_text(
-        f"✅ API hazır!\n\n"
+        "✅ API OLUŞTURULDU\n\n"
         f"{BASE_URL}/api/v1/search/{api_id}?ara="
     )
 
-# ================== MAIN ==================
+# ================= MAIN =================
 if __name__ == "__main__":
     threading.Thread(target=run_flask).start()
 
-    app_bot = Application.builder().token(TOKEN).build()
-    app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(MessageHandler(filters.Document.ALL, dosya))
-    app_bot.run_polling()
+    bot = Application.builder().token(BOT_TOKEN).build()
+    bot.add_handler(CommandHandler("start", start))
+    bot.add_handler(MessageHandler(filters.Document.ALL, file_handler))
+
+    bot.run_polling()
