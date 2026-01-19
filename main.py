@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 # ================= AYARLAR =================
-BOT_TOKEN = "7127783002:AAHKKKCRHPj-O6aNEX-8s3PBLMI3EgS9ri8"
+BOT_TOKEN = "8210876778:AAEYapHGjNEx1ysqLR4nYr2ilXZ4m7tOsOs"
 BASE_URL = "https://ganstar.onrender.com"
 
 DATA_DIR = "veriler"
